@@ -10,8 +10,9 @@
 http-relay is a module for relaying http by websocket in golang.
 
 When one node B is behind NAT and needs to be connected from node C(needs NAT traversal),
-C connects to relay node A with websocket and C relays data to B by this module.
+C connects to relay node A and A relays data to B with websocket.
 
+i.e. C <-> A <-> B:
 
 ## Platform
   * MacOS darwin/Plan9 on i386
@@ -34,7 +35,6 @@ i.e. C <-> A <-> B:
 		relay.ServeRelay("test", ws)
 	}))
 	http.ListenAndServe(":1234", nil)
-
 
 //relay client B
 	http.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
