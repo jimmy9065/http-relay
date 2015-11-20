@@ -114,71 +114,6 @@ func (r *request) toRequest() (*http.Request, error) {
 	return re, nil
 }
 
-//response is for relaying http.Response , which doesn't include ones that cannot be converted to JSON.
-type response struct {
-	Status           string // e.g. "200 OK"
-	StatusCode       int    // e.g. 200
-	Proto            string // e.g. "HTTP/1.0"
-	ProtoMajor       int    // e.g. 1
-	ProtoMinor       int    // e.g. 0
-	Header           http.Header
-	Body             []byte
-	ContentLength    int64
-	TransferEncoding []string
-	Close            bool
-	Trailer          http.Header
-	Request          *request
-	Error            error
-}
-
-//fromResponse converts http.Resopnse to response.
-func fromResponse(r *http.Response, err error) *response {
-	re := &response{
-		Status:           r.Status,
-		StatusCode:       r.StatusCode,
-		Proto:            r.Proto,
-		ProtoMajor:       r.ProtoMajor,
-		ProtoMinor:       r.ProtoMinor,
-		Header:           r.Header,
-		ContentLength:    r.ContentLength,
-		TransferEncoding: r.TransferEncoding,
-		Close:            r.Close,
-		Trailer:          r.Trailer,
-		Error:            err,
-	}
-	re.Body, err = ioutil.ReadAll(r.Body)
-	err2 := r.Body.Close()
-	if err != nil {
-		log.Println(err)
-		re.Error = err
-		return re
-	}
-	if err2 != nil {
-		log.Println(err2)
-		re.Error = err
-		return re
-	}
-	re.Request = fromRequest(r.Request, nil)
-	return re
-}
-
-//toResponse converts resopnse to http.Response.
-func (r *response) toResponse() (*http.Response, error) {
-	re := &http.Response{}
-	re.Status = r.Status
-	re.StatusCode = r.StatusCode
-	re.Proto = r.Proto
-	re.ProtoMajor = r.ProtoMajor
-	re.ProtoMinor = r.ProtoMinor
-	re.Header = r.Header
-	re.Body = ioutil.NopCloser(bytes.NewReader(r.Body))
-	re.ContentLength = r.ContentLength
-	re.TransferEncoding = r.TransferEncoding
-	re.Close = r.Close
-	re.Trailer = r.Trailer
-	return re, r.Error
-}
-
 //ResponseWriter is simple struct for http.ResponseWriter.
 type ResponseWriter struct {
 	Head       http.Header
@@ -239,7 +174,7 @@ type wsRelayServer struct {
 	stop chan struct{}
 }
 
-//ServeRelay starts to relay.
+//StartServe starts to relay.
 //It registers ws connection as name and wait for w.stop channel signal.
 func StartServe(name string, ws *websocket.Conn, doAccept func(*http.Request) bool) {
 	w := &wsRelayServer{
@@ -256,14 +191,14 @@ func StartServe(name string, ws *websocket.Conn, doAccept func(*http.Request) bo
 
 }
 
-//StopServeRelay stops relaying associated with name.
+//StopServe stops relaying associated with name.
 func StopServe(name string) {
 	if w, exist := sockets[name]; exist {
 		w.stop <- struct{}{}
 	}
 }
 
-//HandleRelayServer relays request r to websocket and recieve response and writes it to w.
+//HandleServer relays request r to websocket and recieve response and writes it to w.
 func HandleServer(name string, w http.ResponseWriter, r *http.Request, doAccept func(*ResponseWriter) bool) {
 	wsr := sockets[name]
 	if wsr == nil {
@@ -295,7 +230,7 @@ func HandleServer(name string, w http.ResponseWriter, r *http.Request, doAccept 
 	}
 }
 
-//HandleRelayClient connects to relayURL with websocket , reads requests and passes to
+//HandleClient connects to relayURL with websocket , reads requests and passes to
 //serveMux, and write its response to websocket.
 func HandleClient(relayURL, origin string, serveMux *http.ServeMux, director func(*http.Request)) error {
 	ws, err := websocket.Dial(relayURL, "", origin)
