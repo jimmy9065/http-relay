@@ -16,12 +16,12 @@ func TestRelay(t *testing.T) {
 	//relay server
 	go func() {
 		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			HandleRelayServer("test", w, r, func(r *ResponseWriter) bool {
+			HandleServer("test", w, r, func(r *ResponseWriter) bool {
 				return true
 			})
 		})
 		http.Handle("/ws", websocket.Handler(func(ws *websocket.Conn) {
-			ServeRelay("test", ws, func(r *http.Request) bool {
+			StartServe("test", ws, func(r *http.Request) bool {
 				return true
 			})
 		}))
@@ -34,7 +34,6 @@ func TestRelay(t *testing.T) {
 	time.Sleep(time.Second)
 
 	//relay client
-	var wsock *websocket.Conn
 	go func() {
 		http.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
 			if _, err := w.Write([]byte("hello world!")); err != nil {
@@ -43,8 +42,7 @@ func TestRelay(t *testing.T) {
 		})
 		origin := "http://localhost/"
 		url := "ws://localhost:1234/ws"
-		var err error
-		wsock, err = HandleRelayClient(url, origin, http.DefaultServeMux, func(r *http.Request) {
+		err := HandleClient(url, origin, http.DefaultServeMux, func(r *http.Request) {
 			r.URL.Path = "/hello"
 		})
 		if err != nil {

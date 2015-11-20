@@ -9,44 +9,57 @@
 
 http-relay is a module for relaying http by websocket in golang.
 
-When one node B is behind NAT and needs to be connected from node C(needs NAT traversal),
+When node B is behind NAT and node C wants to connect to B (i.e. needs NAT traversal),
 
-1. C connects to relay node A with http
+0. B requests relay server A to relay by websocket
+1. C connects to the relay server A with http
 2. A relays data to B with websocket
 3. B responses to A with websocket
-4. A relays data to C with http 
+4. A relays B's response to C with http 
 
 i.e. C  <-http->  A  <-websocket->  B
 
-## Platform
-  * MacOS darwin/Plan9 on i386
-  * Windows/OpenBSD on i386/amd64
-  * Linux/NetBSD/FreeBSD on i386/amd64/arm
-  * Solaris on amd64
+## Requirements
+
+* git
+* go 1.4+
+
+are required to compile.
+
+## How to Get
+
+    $ go get github.com/shingetsu-gou/http-relay
 
 ## Example
 
 Suppose C wants to communicate with B by relaying A, 
-i.e. C  <-http->  A  <-websocket->  B:
+C  <-http->  A  <-websocket->  B:
 
 ```go
-
 //relay server A
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		relay.HandleRelayServer("test", "http://localhost:1234/hello", w, r)
+		relay.HandleServer("test", w, r, func(r *ResponseWriter) bool {
+			//You can check resopnse from relay client B
+			return true
+		})
 	})
 	http.Handle("/ws", websocket.Handler(func(ws *websocket.Conn) {
-		relay.ServeRelay("test", ws)
+		relay.Serve("test", ws, func(r *http.Request) bool {
+			//You can check http.Request from client C	
+			return true
+		})
 	}))
 	http.ListenAndServe(":1234", nil)
-
+	
 //relay client B
 	http.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("hello world!"))
 	})
 	origin := "http://localhost/"
 	url := "ws://localhost:1234/ws"
-	relay.HandleRelayClient(url, origin, http.DefaultServeMux)
+	relay.HandleClient(url, origin, http.DefaultServeMux, func(r *http.Request) {
+		r.URL.Path = "/hello"
+	})
 
 //node that want to connect relay client C
 	res, _:= http.Get("http://localhost:1234/")
@@ -56,23 +69,6 @@ i.e. C  <-http->  A  <-websocket->  B:
 
 ```
 
-## Requirements
-
-* git
-* go 1.4+
-
-are required to compile.
-
-## Compile
-
-    $ mkdir gou
-    $ cd gou
-    $ mkdir src
-    $ mkdir bin
-    $ mkdir pkg
-    $ exoprt GOPATH=`pwd`
-    $ go get github.com/shingetsu-gou/http-relay
-	
 ## License
 
 MIT License

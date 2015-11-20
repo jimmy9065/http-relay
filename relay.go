@@ -38,7 +38,7 @@ import (
 	"golang.org/x/net/websocket"
 )
 
-//Request is for relaying http.request , which doesn't include ones that cannot be converted.
+//Request is for relaying http.request , which doesn't include ones that cannot be converted to JSON.
 type request struct {
 	Method           string
 	URL              *url.URL
@@ -58,6 +58,7 @@ type request struct {
 	Error            error
 }
 
+//fromRequest converts http.Request to request.
 func fromRequest(r *http.Request, err error) *request {
 	re := &request{
 		Method:           r.Method,
@@ -88,6 +89,7 @@ func fromRequest(r *http.Request, err error) *request {
 	return re
 }
 
+//toRequst converts request to http.Request
 func (r *request) toRequest() (*http.Request, error) {
 	if r.Error != nil {
 		return nil, r.Error
@@ -112,7 +114,7 @@ func (r *request) toRequest() (*http.Request, error) {
 	return re, nil
 }
 
-//Response is for relaying http.Response , which doesn't include ones that cannot be converted.
+//response is for relaying http.Response , which doesn't include ones that cannot be converted to JSON.
 type response struct {
 	Status           string // e.g. "200 OK"
 	StatusCode       int    // e.g. 200
@@ -129,6 +131,7 @@ type response struct {
 	Error            error
 }
 
+//fromResponse converts http.Resopnse to response.
 func fromResponse(r *http.Response, err error) *response {
 	re := &response{
 		Status:           r.Status,
@@ -159,6 +162,7 @@ func fromResponse(r *http.Response, err error) *response {
 	return re
 }
 
+//toResponse converts resopnse to http.Response.
 func (r *response) toResponse() (*http.Response, error) {
 	re := &http.Response{}
 	re.Status = r.Status
@@ -214,6 +218,7 @@ func (r *ResponseWriter) WriteHeader(s int) {
 	r.StatusCode = s
 }
 
+//copyTo copies r to http.ResponseWriter
 func (r *ResponseWriter) copyTo(w http.ResponseWriter) error {
 	w.WriteHeader(r.StatusCode)
 	if _, err := w.Write(r.Body); err != nil {
@@ -236,44 +241,12 @@ type wsRelayServer struct {
 
 //ServeRelay starts to relay.
 //It registers ws connection as name and wait for w.stop channel signal.
-func ServeRelay(name string, ws *websocket.Conn, doAccept func(*http.Request) bool) {
+func StartServe(name string, ws *websocket.Conn, doAccept func(*http.Request) bool) {
 	w := &wsRelayServer{
 		ws:   ws,
 		stop: make(chan struct{}),
 	}
 	sockets[name] = w
-	log.Println("start serving relay")
-
-	go func() {
-		for {
-			var req request
-			if err := websocket.JSON.Receive(ws, &req); err != nil {
-				log.Println(err)
-				w.stop <- struct{}{}
-				return
-			}
-			r, err := req.toRequest()
-			if err != nil {
-				log.Println(err)
-				w.stop <- struct{}{}
-				return
-			}
-			if doAccept != nil && !doAccept(r) {
-				log.Println("request is denied")
-				w.stop <- struct{}{}
-				return
-			}
-			client := http.Client{}
-			resp, err := client.Do(r)
-			if err != nil {
-				log.Println(err)
-			}
-			re := fromResponse(resp, err)
-			if err := websocket.JSON.Send(ws, re); err != nil {
-				log.Println(err)
-			}
-		}
-	}()
 
 	<-w.stop
 	log.Println("relay exited")
@@ -284,14 +257,14 @@ func ServeRelay(name string, ws *websocket.Conn, doAccept func(*http.Request) bo
 }
 
 //StopServeRelay stops relaying associated with name.
-func StopServeRelay(name string) {
+func StopServe(name string) {
 	if w, exist := sockets[name]; exist {
 		w.stop <- struct{}{}
 	}
 }
 
 //HandleRelayServer relays request r to websocket and recieve response and writes it to w.
-func HandleRelayServer(name string, w http.ResponseWriter, r *http.Request, doAccept func(*ResponseWriter) bool) {
+func HandleServer(name string, w http.ResponseWriter, r *http.Request, doAccept func(*ResponseWriter) bool) {
 	wsr := sockets[name]
 	if wsr == nil {
 		log.Println("not found", name)
@@ -311,7 +284,7 @@ func HandleRelayServer(name string, w http.ResponseWriter, r *http.Request, doAc
 		log.Println(err)
 		return
 	}
-	if doAccept != nil && doAccept(&res) {
+	if doAccept != nil && !doAccept(&res) {
 		log.Println("reponse is denied")
 		wsr.stop <- struct{}{}
 		return
@@ -324,11 +297,11 @@ func HandleRelayServer(name string, w http.ResponseWriter, r *http.Request, doAc
 
 //HandleRelayClient connects to relayURL with websocket , reads requests and passes to
 //serveMux, and write its response to websocket.
-func HandleRelayClient(relayURL, origin string, serveMux *http.ServeMux, modify func(*http.Request)) (*websocket.Conn, error) {
+func HandleClient(relayURL, origin string, serveMux *http.ServeMux, director func(*http.Request)) error {
 	ws, err := websocket.Dial(relayURL, "", origin)
 	if err != nil {
 		log.Println(err)
-		return nil, err
+		return err
 	}
 	go func() {
 		for {
@@ -343,8 +316,8 @@ func HandleRelayClient(relayURL, origin string, serveMux *http.ServeMux, modify 
 				log.Println(err)
 				continue
 			}
-			if modify != nil {
-				modify(re)
+			if director != nil {
+				director(re)
 			}
 			var w ResponseWriter
 			serveMux.ServeHTTP(&w, re)
@@ -354,20 +327,5 @@ func HandleRelayClient(relayURL, origin string, serveMux *http.ServeMux, modify 
 			log.Println("sent resp to websocket")
 		}
 	}()
-	return ws, nil
-}
-
-//SendHTTPRequest is for client to request http via websocket.
-func SendHTTPRequest(ws *websocket.Conn, rq *http.Request) (*http.Response, error) {
-	req := fromRequest(rq, nil)
-	if err := websocket.JSON.Send(ws, &req); err != nil {
-		log.Println(err)
-		return nil, err
-	}
-	var re response
-	if err := websocket.JSON.Receive(ws, &re); err != nil {
-		log.Println(err)
-		return nil, err
-	}
-	return re.toResponse()
+	return nil
 }
