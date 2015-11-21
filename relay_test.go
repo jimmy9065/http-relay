@@ -40,7 +40,7 @@ func TestRelay(t *testing.T) {
 		})
 		origin := "http://localhost/"
 		url := "ws://localhost:1234/ws"
-		err := HandleClient(url, origin, http.DefaultServeMux.ServeHTTP, func(r *http.Request) {
+		err := HandleClient(url, origin, http.DefaultServeMux.ServeHTTP, nil, func(r *http.Request) {
 			r.URL.Path = "/hello"
 		})
 		if err != nil {
