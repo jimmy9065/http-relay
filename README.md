@@ -44,10 +44,7 @@ C  <-http->  A  <-websocket->  B:
 		})
 	})
 	http.Handle("/ws", websocket.Handler(func(ws *websocket.Conn) {
-		relay.Serve("test", ws, func(r *http.Request) bool {
-			//You can check http.Request from client C	
-			return true
-		})
+		relay.Serve("test", ws)
 	}))
 	http.ListenAndServe(":1234", nil)
 	

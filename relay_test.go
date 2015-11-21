@@ -21,9 +21,7 @@ func TestRelay(t *testing.T) {
 			})
 		})
 		http.Handle("/ws", websocket.Handler(func(ws *websocket.Conn) {
-			StartServe("test", ws, func(r *http.Request) bool {
-				return true
-			})
+			StartServe("test", ws)
 		}))
 
 		if err := http.ListenAndServe(":1234", nil); err != nil {
@@ -42,7 +40,7 @@ func TestRelay(t *testing.T) {
 		})
 		origin := "http://localhost/"
 		url := "ws://localhost:1234/ws"
-		err := HandleClient(url, origin, http.DefaultServeMux, func(r *http.Request) {
+		err := HandleClient(url, origin, http.DefaultServeMux.ServeHTTP, func(r *http.Request) {
 			r.URL.Path = "/hello"
 		})
 		if err != nil {

@@ -34,6 +34,9 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strings"
+	"sync"
+	"sync/atomic"
 
 	"golang.org/x/net/websocket"
 )
@@ -168,31 +171,57 @@ func (r *ResponseWriter) copyTo(w http.ResponseWriter) error {
 }
 
 var sockets = make(map[string]*wsRelayServer)
+var count int32
+var mutex sync.RWMutex
 
 type wsRelayServer struct {
 	ws   *websocket.Conn
 	stop chan struct{}
 }
 
+//Count returns # of relay clients.
+func Count() int32 {
+	return atomic.LoadInt32(&count)
+}
+
+//IsAccepted retruns true if prefix is already accepted.
+func IsAccepted(prefix string) bool {
+	mutex.RLock()
+	defer mutex.RUnlock()
+	for n := range sockets {
+		if strings.HasPrefix(n, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 //StartServe starts to relay.
 //It registers ws connection as name and wait for w.stop channel signal.
-func StartServe(name string, ws *websocket.Conn, doAccept func(*http.Request) bool) {
+func StartServe(name string, ws *websocket.Conn) {
 	w := &wsRelayServer{
 		ws:   ws,
 		stop: make(chan struct{}),
 	}
+	mutex.Lock()
+	if old := sockets[name]; old != nil {
+		old.stop <- struct{}{}
+	}
 	sockets[name] = w
+	mutex.Unlock()
 
 	<-w.stop
 	log.Println("relay exited")
+	atomic.AddInt32(&count, -1)
 	if err := ws.Close(); err != nil {
 		log.Println(err)
 	}
-
 }
 
 //StopServe stops relaying associated with name.
 func StopServe(name string) {
+	mutex.RLock()
+	defer mutex.RUnlock()
 	if w, exist := sockets[name]; exist {
 		w.stop <- struct{}{}
 	}
@@ -200,7 +229,9 @@ func StopServe(name string) {
 
 //HandleServer relays request r to websocket and recieve response and writes it to w.
 func HandleServer(name string, w http.ResponseWriter, r *http.Request, doAccept func(*ResponseWriter) bool) {
+	mutex.RLock()
 	wsr := sockets[name]
+	mutex.RUnlock()
 	if wsr == nil {
 		log.Println("not found", name)
 		return
@@ -232,7 +263,7 @@ func HandleServer(name string, w http.ResponseWriter, r *http.Request, doAccept 
 
 //HandleClient connects to relayURL with websocket , reads requests and passes to
 //serveMux, and write its response to websocket.
-func HandleClient(relayURL, origin string, serveMux *http.ServeMux, director func(*http.Request)) error {
+func HandleClient(relayURL, origin string, serveHTTP http.HandlerFunc, director func(*http.Request)) error {
 	ws, err := websocket.Dial(relayURL, "", origin)
 	if err != nil {
 		log.Println(err)
@@ -255,7 +286,7 @@ func HandleClient(relayURL, origin string, serveMux *http.ServeMux, director fun
 				director(re)
 			}
 			var w ResponseWriter
-			serveMux.ServeHTTP(&w, re)
+			serveHTTP(&w, re)
 			if err := websocket.JSON.Send(ws, w); err != nil {
 				log.Println(err)
 			}
