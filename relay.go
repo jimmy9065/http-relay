@@ -38,9 +38,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
-	"golang.org/x/net/websocket"
+	"github.com/gorilla/websocket"
 )
 
 //Request is for relaying http.request , which doesn't include ones that cannot be converted to JSON.
@@ -203,9 +202,6 @@ func IsAccepted(prefix string) bool {
 //StartServe starts to relay.
 //It registers ws connection as name and wait for w.stop channel signal.
 func StartServe(name string, ws *websocket.Conn) {
-	if err := ws.SetDeadline(time.Now().Add(10000 * time.Hour)); err != nil {
-		log.Println(err)
-	}
 	w := &wsRelayServer{
 		ws:   ws,
 		stop: make(chan struct{}),
@@ -247,7 +243,7 @@ func HandleServer(name string, w http.ResponseWriter, r *http.Request, doAccept 
 	ws := wsr.ws
 
 	re := fromRequest(r, nil)
-	if err := websocket.JSON.Send(ws, re); err != nil {
+	if err := ws.WriteJSON(re); err != nil {
 		log.Println(err)
 		if err == io.EOF {
 			wsr.stop <- struct{}{}
@@ -257,7 +253,7 @@ func HandleServer(name string, w http.ResponseWriter, r *http.Request, doAccept 
 	log.Println("sent request to websocket", re)
 
 	var res ResponseWriter
-	if err := websocket.JSON.Receive(ws, &res); err != nil {
+	if err := ws.ReadJSON(&res); err != nil {
 		log.Println(err)
 		return
 	}
@@ -275,19 +271,16 @@ func HandleServer(name string, w http.ResponseWriter, r *http.Request, doAccept 
 
 //HandleClient connects to relayURL with websocket , reads requests and passes to
 //serveMux, and write its response to websocket.
-func HandleClient(relayURL, origin string, serveHTTP http.HandlerFunc, closed chan struct{}, director func(*http.Request)) error {
-	ws, err := websocket.Dial(relayURL, "", origin)
+func HandleClient(relayURL string, serveHTTP http.HandlerFunc, closed chan struct{}, director func(*http.Request)) error {
+	ws, _, err := websocket.DefaultDialer.Dial(relayURL, nil)
 	if err != nil {
 		log.Println(err)
 		return err
 	}
-	if err := ws.SetDeadline(time.Now().Add(10000 * time.Hour)); err != nil {
-		log.Println(err)
-	}
 	go func() {
 		for {
 			var r request
-			if err := websocket.JSON.Receive(ws, &r); err != nil {
+			if err := ws.ReadJSON(&r); err != nil {
 				log.Println(err)
 				if err == io.EOF {
 					if closed != nil {
@@ -308,7 +301,7 @@ func HandleClient(relayURL, origin string, serveHTTP http.HandlerFunc, closed ch
 			}
 			var w ResponseWriter
 			serveHTTP(&w, re)
-			if err := websocket.JSON.Send(ws, w); err != nil {
+			if err := ws.WriteJSON(w); err != nil {
 				log.Println(err)
 			}
 			log.Println("sent resp to websocket")

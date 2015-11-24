@@ -54,7 +54,8 @@ C  <-http->  A  <-websocket->  B:
 	})
 	origin := "http://localhost/"
 	url := "ws://localhost:1234/ws"
-	relay.HandleClient(url, origin, http.DefaultServeMux, func(r *http.Request) {
+	closed:=make(chan struct{}) //channel for signaling websocket was closed
+	relay.HandleClient(url, origin, http.DefaultServeMux, closed,func(r *http.Request) {
 		r.URL.Path = "/hello"
 	})
 

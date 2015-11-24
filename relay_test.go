@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/net/websocket"
+	"github.com/gorilla/websocket"
 )
 
 func TestRelay(t *testing.T) {
@@ -20,9 +20,15 @@ func TestRelay(t *testing.T) {
 				return true
 			})
 		})
-		http.Handle("/ws", websocket.Handler(func(ws *websocket.Conn) {
+		http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+			ug := websocket.Upgrader{}
+			ws, err := ug.Upgrade(w, r, nil)
+			if err != nil {
+				log.Print("upgrade:", err)
+				return
+			}
 			StartServe("test", ws)
-		}))
+		})
 
 		if err := http.ListenAndServe(":1234", nil); err != nil {
 			log.Fatal("ListenAndServe:", err)
@@ -38,9 +44,8 @@ func TestRelay(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
-		origin := "http://localhost/"
 		url := "ws://localhost:1234/ws"
-		err := HandleClient(url, origin, http.DefaultServeMux.ServeHTTP, nil, func(r *http.Request) {
+		err := HandleClient(url, http.DefaultServeMux.ServeHTTP, nil, func(r *http.Request) {
 			r.URL.Path = "/hello"
 		})
 		if err != nil {
