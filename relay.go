@@ -30,7 +30,7 @@ package relay
 
 import (
 	"bytes"
-	"io"
+	"errors"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -38,8 +38,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
-	"github.com/gorilla/websocket"
+	"golang.org/x/net/websocket"
 )
 
 //Request is for relaying http.request , which doesn't include ones that cannot be converted to JSON.
@@ -53,13 +54,14 @@ type request struct {
 	Body             []byte
 	ContentLength    int64
 	TransferEncoding []string
-	Close            bool
 	Host             string
 	Form             url.Values
 	Trailer          http.Header
 	RemoteAddr       string
 	RequestURI       string
 	Error            error
+	IsPing           bool
+	Close            bool
 }
 
 //fromRequest converts http.Request to request.
@@ -179,6 +181,7 @@ var mutex sync.RWMutex
 
 type wsRelayServer struct {
 	ws   *websocket.Conn
+	msg  chan interface{}
 	stop chan struct{}
 }
 
@@ -204,14 +207,18 @@ func IsAccepted(prefix string) bool {
 func StartServe(name string, ws *websocket.Conn) {
 	w := &wsRelayServer{
 		ws:   ws,
+		msg:  make(chan interface{}),
 		stop: make(chan struct{}),
 	}
+	setDeadlines(ws)
+
 	mutex.Lock()
 	if old := sockets[name]; old != nil {
 		old.stop <- struct{}{}
 	}
 	sockets[name] = w
 	mutex.Unlock()
+	w.writePump()
 
 	<-w.stop
 	log.Println("relay exited")
@@ -231,6 +238,55 @@ func StopServe(name string) {
 	}
 }
 
+func (r *wsRelayServer) writePump() {
+	go func() {
+		for {
+			select {
+			case <-time.Tick(time.Minute):
+				if err := sendPing(r.ws); err != nil {
+					log.Println(err)
+					r.stop <- struct{}{}
+					return
+				}
+				if err := recvPing(r.ws); err != nil {
+					log.Println(err)
+					r.stop <- struct{}{}
+					return
+				}
+			case req := <-r.msg:
+				if err := websocket.JSON.Send(r.ws, req); err != nil {
+					log.Println(err)
+					r.stop <- struct{}{}
+					return
+				}
+			}
+		}
+	}()
+}
+
+func recvPing(ws *websocket.Conn) error {
+	var req request
+	if err := websocket.JSON.Receive(ws, &req); err != nil {
+		log.Println(err)
+		return err
+	}
+	if !req.IsPing {
+		err := errors.New("not ping")
+		log.Println(err)
+		return err
+	}
+	log.Println("pong received")
+	return nil
+}
+
+func sendPing(ws *websocket.Conn) error {
+	log.Println("sendig ping")
+	req := request{
+		IsPing: true,
+	}
+	return websocket.JSON.Send(ws, req)
+}
+
 //HandleServer relays request r to websocket and recieve response and writes it to w.
 func HandleServer(name string, w http.ResponseWriter, r *http.Request, doAccept func(*ResponseWriter) bool) {
 	mutex.RLock()
@@ -240,27 +296,20 @@ func HandleServer(name string, w http.ResponseWriter, r *http.Request, doAccept 
 		log.Println("not found", name)
 		return
 	}
-	ws := wsr.ws
 
 	re := fromRequest(r, nil)
-	if err := ws.WriteJSON(re); err != nil {
-		log.Println(err)
-		if err == io.EOF {
-			wsr.stop <- struct{}{}
-		}
-		return
-	}
+	wsr.msg <- re
 	log.Println("sent request to websocket", re)
 
 	var res ResponseWriter
-	if err := ws.ReadJSON(&res); err != nil {
+	if err := websocket.JSON.Receive(wsr.ws, &res); err != nil {
 		log.Println(err)
+		wsr.stop <- struct{}{}
 		return
 	}
 	log.Println("recv response from websocket")
 	if doAccept != nil && !doAccept(&res) {
 		log.Println("reponse is denied")
-		wsr.stop <- struct{}{}
 		return
 	}
 	if err := res.copyTo(w); err != nil {
@@ -269,28 +318,50 @@ func HandleServer(name string, w http.ResponseWriter, r *http.Request, doAccept 
 	}
 }
 
+func setDeadlines(ws *websocket.Conn) {
+	if err := ws.SetDeadline(time.Now().Add(100 * time.Hour)); err != nil {
+		log.Fatal(err)
+	}
+	if err := ws.SetReadDeadline(time.Now().Add(100 * time.Hour)); err != nil {
+		log.Fatal(err)
+	}
+	if err := ws.SetWriteDeadline(time.Now().Add(100 * time.Hour)); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func close(err error, closed chan struct{}) {
+	log.Println(err)
+	if closed != nil {
+		closed <- struct{}{}
+	}
+}
+
 //HandleClient connects to relayURL with websocket , reads requests and passes to
 //serveMux, and write its response to websocket.
-func HandleClient(relayURL string, serveHTTP http.HandlerFunc, closed chan struct{}, director func(*http.Request)) error {
-	ws, _, err := websocket.DefaultDialer.Dial(relayURL, nil)
+func HandleClient(relayURL, origin string, serveHTTP http.HandlerFunc, closed chan struct{}, director func(*http.Request)) error {
+	ws, err := websocket.Dial(relayURL, "", origin)
 	if err != nil {
 		log.Println(err)
 		return err
 	}
+	setDeadlines(ws)
 	go func() {
 		for {
 			var r request
-			if err := ws.ReadJSON(&r); err != nil {
-				log.Println(err)
-				if err == io.EOF {
-					if closed != nil {
-						closed <- struct{}{}
-					}
+			if err := websocket.JSON.Receive(ws, &r); err != nil {
+				close(err, closed)
+				return
+			}
+			log.Println("received req from websocket", r)
+			if r.IsPing {
+				log.Println("received ping")
+				if err := sendPing(ws); err != nil {
+					close(err, closed)
 					return
 				}
 				continue
 			}
-			log.Println("received req from websocket", r)
 			re, err := r.toRequest()
 			if err != nil {
 				log.Println(err)
@@ -301,8 +372,9 @@ func HandleClient(relayURL string, serveHTTP http.HandlerFunc, closed chan struc
 			}
 			var w ResponseWriter
 			serveHTTP(&w, re)
-			if err := ws.WriteJSON(w); err != nil {
-				log.Println(err)
+			if err := websocket.JSON.Send(ws, &w); err != nil {
+				close(err, closed)
+				return
 			}
 			log.Println("sent resp to websocket")
 		}
