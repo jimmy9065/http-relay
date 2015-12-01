@@ -100,6 +100,9 @@ func (r *request) toRequest() (*http.Request, error) {
 	if r.Error != nil {
 		return nil, r.Error
 	}
+	if r.Body == nil || len(r.Body) == 0 {
+		return nil, errors.New("body is nil")
+	}
 	b := bytes.NewReader(r.Body)
 	re, err := http.NewRequest(r.Method, r.URL.String(), b)
 	if err != nil {
@@ -376,7 +379,7 @@ func HandleClient(relayURL, origin string, serveHTTP http.HandlerFunc, closed ch
 				close(err, closed)
 				return
 			}
-			log.Println("sent resp to websocket")
+			log.Println("sent resp to websocket", re)
 		}
 	}()
 	return nil
