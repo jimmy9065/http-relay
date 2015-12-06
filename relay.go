@@ -337,47 +337,58 @@ func close(err error, closed chan struct{}) {
 	}
 }
 
+var clientWS *websocket.Conn
+
+func readClient(serveHTTP http.HandlerFunc, closed chan struct{}, director func(*http.Request)) {
+	for {
+		var r request
+		if err := websocket.JSON.Receive(clientWS, &r); err != nil {
+			close(err, closed)
+			return
+		}
+		log.Println("received req from websocket", r)
+		if r.IsPing {
+			log.Println("received ping")
+			if err := sendPing(clientWS); err != nil {
+				close(err, closed)
+				return
+			}
+			continue
+		}
+		re, err := r.toRequest()
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+		if director != nil {
+			director(re)
+		}
+		var w ResponseWriter
+		serveHTTP(&w, re)
+		if err := websocket.JSON.Send(clientWS, &w); err != nil {
+			close(err, closed)
+			return
+		}
+		log.Println("sent resp to websocket", re)
+	}
+}
+
 //HandleClient connects to relayURL with websocket , reads requests and passes to
 //serveMux, and write its response to websocket.
 func HandleClient(relayURL, origin string, serveHTTP http.HandlerFunc, closed chan struct{}, director func(*http.Request)) error {
-	ws, err := websocket.Dial(relayURL, "", origin)
+	if clientWS != nil {
+		log.Println("closing openned websocket")
+		if err := clientWS.Close(); err != nil {
+			log.Println(err)
+		}
+	}
+	var err error
+	clientWS, err = websocket.Dial(relayURL, "", origin)
 	if err != nil {
 		log.Println(err)
 		return err
 	}
-	setDeadlines(ws)
-	go func() {
-		for {
-			var r request
-			if err := websocket.JSON.Receive(ws, &r); err != nil {
-				close(err, closed)
-				return
-			}
-			log.Println("received req from websocket", r)
-			if r.IsPing {
-				log.Println("received ping")
-				if err := sendPing(ws); err != nil {
-					close(err, closed)
-					return
-				}
-				continue
-			}
-			re, err := r.toRequest()
-			if err != nil {
-				log.Println(err)
-				continue
-			}
-			if director != nil {
-				director(re)
-			}
-			var w ResponseWriter
-			serveHTTP(&w, re)
-			if err := websocket.JSON.Send(ws, &w); err != nil {
-				close(err, closed)
-				return
-			}
-			log.Println("sent resp to websocket", re)
-		}
-	}()
+	setDeadlines(clientWS)
+	go readClient(serveHTTP, closed, director)
 	return nil
 }
